@@ -1,421 +1,308 @@
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""
+CYLLAMA COMPUSE — Agent Loop
+
+Ollama-powered desktop automation agent.
+Implements the perception → reasoning → action loop.
+"""
+
 import os
-from typing import Literal, Optional, Union, Any
-from google import genai
-from google.genai import types
-import termcolor
-from google.genai.types import (
-    Part,
-    GenerateContentConfig,
-    Content,
-    Candidate,
-    FunctionResponse,
-    FinishReason,
-)
+import sys
+import json
 import time
-from rich.console import Console
-from rich.table import Table
+import logging
+from typing import Generator, Optional
 
-from computers import EnvState, Computer
+import requests
 
-MAX_RECENT_TURN_WITH_SCREENSHOTS = 3
-PREDEFINED_COMPUTER_USE_FUNCTIONS = [
-    "open_web_browser",
-    "click_at",
-    "hover_at",
-    "type_text_at",
-    "scroll_document",
-    "scroll_at",
-    "wait_5_seconds",
-    "go_back",
-    "go_forward",
-    "search",
-    "navigate",
-    "key_combination",
-    "drag_and_drop",
-]
+from computers.desktop.desktop import DesktopComputer
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+MODEL_NAME = os.environ.get("MODEL_NAME", "llama3:8b")
+MAX_ITERATIONS = 30
+LOG_DIR = os.environ.get("LOG_DIR", "logs")
+LOG_FILE = os.environ.get("LOG_FILE", "agent-history.json")
+
+# Actions considered dangerous and requiring confirmation
+DANGEROUS_ACTIONS = {"hotkey", "type"}
+
+SYSTEM_PROMPT = """\
+You are CYLLAMA COMPUSE, an AI desktop automation agent.
+You can see the user's screen via OCR and execute actions on their desktop.
+
+You MUST respond with a single valid JSON object. Do NOT include any other text.
+The JSON MUST contain these keys:
+- "action": one of "click", "type", "hotkey", "scroll", "done"
+- "reason": a short explanation of why you chose this action
+
+Additional keys depending on the action:
+- click:  "x" (int), "y" (int)
+- type:   "text" (str)
+- hotkey: "keys" (list of str, e.g. ["ctrl", "c"])
+- scroll: "direction" ("up" or "down"), "amount" (int, default 3)
+- done:   (no extra keys)
+
+Example responses:
+{"action": "click", "x": 500, "y": 300, "reason": "clicking the search bar"}
+{"action": "type", "text": "hello world", "reason": "typing into the search bar"}
+{"action": "hotkey", "keys": ["ctrl", "s"], "reason": "saving the document"}
+{"action": "scroll", "direction": "down", "amount": 5, "reason": "scrolling to see more"}
+{"action": "done", "reason": "task is complete"}
+"""
 
 
-console = Console()
-
-# Built-in Computer Use tools will return "EnvState".
-# Custom provided functions will return "dict".
-FunctionResponseT = Union[EnvState, dict]
+def _emit(event_type: str, data: dict) -> dict:
+    """Build a JSON event to send to the TUI."""
+    return {"type": event_type, "data": data}
 
 
-def multiply_numbers(x: float, y: float) -> dict:
-    """Multiplies two numbers."""
-    return {"result": x * y}
+def _ensure_log_dir() -> str:
+    """Create the log directory if needed and return the log file path."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+    return os.path.join(LOG_DIR, LOG_FILE)
 
 
-class BrowserAgent:
+def _append_log(entry: dict) -> None:
+    """Append an entry to the JSON log file."""
+    log_path = _ensure_log_dir()
+    history: list = []
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r") as f:
+                history = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            history = []
+    history.append(entry)
+    with open(log_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Ollama client
+# ---------------------------------------------------------------------------
+
+def call_ollama(messages: list[dict], model: str = MODEL_NAME) -> str:
+    """Call the Ollama chat API and return the assistant's response text."""
+    url = f"{OLLAMA_HOST}/api/chat"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "format": "json",
+        "options": {
+            "temperature": 0.2,
+            "num_predict": 512,
+        },
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=120)
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("message", {}).get("content", "")
+    except requests.RequestException as exc:
+        logger.error("Ollama request failed: %s", exc)
+        raise
+
+
+def parse_action(raw: str) -> dict:
+    """Parse the model response into an action dict.
+
+    Tries to extract a JSON object from the raw text.  Falls back to a
+    ``done`` action if parsing fails.
+    """
+    raw = raw.strip()
+    # Try to find a JSON object in the response
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+    return {"action": "done", "reason": "could not parse model response"}
+
+
+# ---------------------------------------------------------------------------
+# Safety
+# ---------------------------------------------------------------------------
+
+def _is_dangerous(action: dict) -> bool:
+    """Return True if the action is considered potentially dangerous."""
+    return action.get("action") in DANGEROUS_ACTIONS
+
+
+def confirm_action(action: dict) -> bool:
+    """Prompt the user to confirm a dangerous action.
+
+    Returns True if the user confirms, False otherwise.  When
+    ``CONFIRM_DANGEROUS`` env var is ``false`` confirmation is skipped.
+    """
+    if os.environ.get("CONFIRM_DANGEROUS", "true").lower() == "false":
+        return True
+    print(
+        json.dumps(
+            _emit("log", {"message": f"⚠️  Confirm action: {json.dumps(action)}"})
+        ),
+        flush=True,
+    )
+    # In non-interactive (piped) mode, auto-confirm
+    if not sys.stdin.isatty():
+        return True
+    answer = input("Proceed? [y/N] ").strip().lower()
+    return answer in ("y", "yes")
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
+
+class DesktopAgent:
+    """Ollama-powered desktop automation agent."""
+
     def __init__(
         self,
-        browser_computer: Computer,
-        query: str,
-        model_name: str,
-        verbose: bool = True,
+        task: str,
+        *,
+        model: str = MODEL_NAME,
+        max_iterations: int = MAX_ITERATIONS,
+        computer: Optional[DesktopComputer] = None,
     ):
-        self._browser_computer = browser_computer
-        self._query = query
-        self._model_name = model_name
-        self._verbose = verbose
-        self.final_reasoning = None
-        self._client = genai.Client(
-            api_key=os.environ.get("GEMINI_API_KEY"),
-            vertexai=os.environ.get("USE_VERTEXAI", "0").lower() in ["true", "1"],
-            project=os.environ.get("VERTEXAI_PROJECT"),
-            location=os.environ.get("VERTEXAI_LOCATION"),
+        self.task = task
+        self.model = model
+        self.max_iterations = max_iterations
+        self.computer = computer or DesktopComputer()
+        self.history: list[dict] = []
+        self._messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    # ------------------------------------------------------------------
+    # Main loop exposed as a generator of JSON events
+    # ------------------------------------------------------------------
+
+    def run_task(self, task: Optional[str] = None) -> Generator[dict, None, None]:
+        """Run the agent loop, yielding JSON events for each step."""
+        task = task or self.task
+        yield _emit("log", {"message": f"Starting task: {task}"})
+
+        # Initial user message with task description
+        self._messages.append(
+            {
+                "role": "user",
+                "content": f"TASK: {task}\n\nPlease analyze the current screen and decide the first action.",
+            }
         )
-        self._contents: list[Content] = [
-            Content(
-                role="user",
-                parts=[
-                    Part(text=self._query),
-                ],
-            )
-        ]
 
-        # Exclude any predefined functions here.
-        excluded_predefined_functions = []
+        for iteration in range(1, self.max_iterations + 1):
+            yield _emit("log", {"message": f"--- Iteration {iteration} ---"})
 
-        # Add your own custom functions here.
-        custom_functions = [
-            # For example:
-            types.FunctionDeclaration.from_callable(
-                client=self._client, callable=multiply_numbers
-            )
-        ]
+            # 1. Capture screenshot
+            try:
+                screenshot = self.computer.capture_screen()
+            except Exception as exc:
+                yield _emit("log", {"message": f"Screenshot failed: {exc}"})
+                break
 
-        self._generate_content_config = GenerateContentConfig(
-            temperature=1,
-            top_p=0.95,
-            top_k=40,
-            max_output_tokens=8192,
-            tools=[
-                types.Tool(
-                    computer_use=types.ComputerUse(
-                        environment=types.Environment.ENVIRONMENT_BROWSER,
-                        excluded_predefined_functions=excluded_predefined_functions,
+            # 2. Perception — run OCR
+            try:
+                ocr_elements = self.computer.run_ocr(screenshot)
+            except Exception as exc:
+                yield _emit("log", {"message": f"OCR failed: {exc}"})
+                ocr_elements = []
+
+            yield _emit("ocr", {"elements": ocr_elements})
+
+            # 3. Build prompt with OCR context
+            ocr_summary = json.dumps(ocr_elements[:50])  # limit to 50 elements
+            self._messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Current screen OCR elements (up to 50):\n{ocr_summary}\n\n"
+                        "Based on the current screen state, what action should I take next? "
+                        "Respond with a JSON object."
                     ),
-                ),
-                types.Tool(function_declarations=custom_functions),
-            ],
-            thinking_config=types.ThinkingConfig(
-                include_thoughts=True
-            ),
-        )
+                }
+            )
 
-    def handle_action(self, action: types.FunctionCall) -> FunctionResponseT:
-        """Handles the action and returns the environment state."""
-        if action.name == "open_web_browser":
-            return self._browser_computer.open_web_browser()
-        elif action.name == "click_at":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.click_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "hover_at":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.hover_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "type_text_at":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            press_enter = action.args.get("press_enter", False)
-            clear_before_typing = action.args.get("clear_before_typing", True)
-            return self._browser_computer.type_text_at(
-                x=x,
-                y=y,
-                text=action.args["text"],
-                press_enter=press_enter,
-                clear_before_typing=clear_before_typing,
-            )
-        elif action.name == "scroll_document":
-            return self._browser_computer.scroll_document(action.args["direction"])
-        elif action.name == "scroll_at":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            magnitude = action.args.get("magnitude", 800)
-            direction = action.args["direction"]
-
-            if direction in ("up", "down"):
-                magnitude = self.denormalize_y(magnitude)
-            elif direction in ("left", "right"):
-                magnitude = self.denormalize_x(magnitude)
-            else:
-                raise ValueError("Unknown direction: ", direction)
-            return self._browser_computer.scroll_at(
-                x=x, y=y, direction=direction, magnitude=magnitude
-            )
-        elif action.name == "wait_5_seconds":
-            return self._browser_computer.wait_5_seconds()
-        elif action.name == "go_back":
-            return self._browser_computer.go_back()
-        elif action.name == "go_forward":
-            return self._browser_computer.go_forward()
-        elif action.name == "search":
-            return self._browser_computer.search()
-        elif action.name == "navigate":
-            return self._browser_computer.navigate(action.args["url"])
-        elif action.name == "key_combination":
-            return self._browser_computer.key_combination(
-                action.args["keys"].split("+")
-            )
-        elif action.name == "drag_and_drop":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            destination_x = self.denormalize_x(action.args["destination_x"])
-            destination_y = self.denormalize_y(action.args["destination_y"])
-            return self._browser_computer.drag_and_drop(
-                x=x,
-                y=y,
-                destination_x=destination_x,
-                destination_y=destination_y,
-            )
-        # Handle the custom function declarations here.
-        elif action.name == multiply_numbers.__name__:
-            return multiply_numbers(x=action.args["x"], y=action.args["y"])
-        else:
-            raise ValueError(f"Unsupported function: {action}")
-
-    def get_model_response(
-        self, max_retries=5, base_delay_s=1
-    ) -> types.GenerateContentResponse:
-        for attempt in range(max_retries):
+            # 4. Call Ollama
+            yield _emit("log", {"message": "Calling Ollama..."})
             try:
-                response = self._client.models.generate_content(
-                    model=self._model_name,
-                    contents=self._contents,
-                    config=self._generate_content_config,
-                )
-                return response  # Return response on success
-            except Exception as e:
-                print(e)
-                if attempt < max_retries - 1:
-                    delay = base_delay_s * (2**attempt)
-                    message = (
-                        f"Generating content failed on attempt {attempt + 1}. "
-                        f"Retrying in {delay} seconds...\n"
-                    )
-                    termcolor.cprint(
-                        message,
-                        color="yellow",
-                    )
-                    time.sleep(delay)
-                else:
-                    termcolor.cprint(
-                        f"Generating content failed after {max_retries} attempts.\n",
-                        color="red",
-                    )
-                    raise
+                raw_response = call_ollama(self._messages, self.model)
+            except Exception as exc:
+                yield _emit("log", {"message": f"Ollama error: {exc}"})
+                break
 
-    def get_text(self, candidate: Candidate) -> Optional[str]:
-        """Extracts the text from the candidate."""
-        if not candidate.content or not candidate.content.parts:
-            return None
-        text = []
-        for part in candidate.content.parts:
-            if part.text:
-                text.append(part.text)
-        return " ".join(text) or None
+            action = parse_action(raw_response)
+            yield _emit("action", action)
 
-    def extract_function_calls(self, candidate: Candidate) -> list[types.FunctionCall]:
-        """Extracts the function call from the candidate."""
-        if not candidate.content or not candidate.content.parts:
-            return []
-        ret = []
-        for part in candidate.content.parts:
-            if part.function_call:
-                ret.append(part.function_call)
-        return ret
-
-    def run_one_iteration(self) -> Literal["COMPLETE", "CONTINUE"]:
-        # Generate a response from the model.
-        if self._verbose:
-            with console.status(
-                "Generating response from Gemini Computer Use...", spinner_style=None
-            ):
-                try:
-                    response = self.get_model_response()
-                except Exception as e:
-                    return "COMPLETE"
-        else:
-            try:
-                response = self.get_model_response()
-            except Exception as e:
-                return "COMPLETE"
-
-        if not response.candidates:
-            if response.prompt_feedback and response.prompt_feedback.block_reason == types.BlockReason.SAFETY:
-                raise ValueError(f"Response was blocked due to safety. Feedback: {response.prompt_feedback}")
-            print("Response has no candidates!")
-            print(response)
-            raise ValueError("Empty response")
-
-        # Extract the text and function call from the response.
-        candidate = response.candidates[0]
-        # Append the model turn to conversation history.
-        if candidate.content:
-            self._contents.append(candidate.content)
-
-        reasoning = self.get_text(candidate)
-        function_calls = self.extract_function_calls(candidate)
-
-        # Retry the request in case of malformed FCs.
-        if (
-            not function_calls
-            and not reasoning
-            and candidate.finish_reason == FinishReason.MALFORMED_FUNCTION_CALL
-        ):
-            return "CONTINUE"
-
-        if not function_calls:
-            print(f"Agent Loop Complete: {reasoning}")
-            self.final_reasoning = reasoning
-            return "COMPLETE"
-
-        function_call_strs = []
-        for function_call in function_calls:
-            # Print the function call and any reasoning.
-            function_call_str = f"Name: {function_call.name}"
-            if function_call.args:
-                function_call_str += f"\nArgs:"
-                for key, value in function_call.args.items():
-                    function_call_str += f"\n  {key}: {value}"
-            function_call_strs.append(function_call_str)
-
-        table = Table(expand=True)
-        table.add_column(
-            "Gemini Computer Use Reasoning", header_style="magenta", ratio=1
-        )
-        table.add_column("Function Call(s)", header_style="cyan", ratio=1)
-        table.add_row(reasoning, "\n".join(function_call_strs))
-        if self._verbose:
-            console.print(table)
-            print()
-
-        function_responses = []
-        for function_call in function_calls:
-            extra_fr_fields = {}
-            if function_call.args and (
-                safety := function_call.args.get("safety_decision")
-            ):
-                decision = self._get_safety_confirmation(safety)
-                if decision == "TERMINATE":
-                    print("Terminating agent loop")
-                    return "COMPLETE"
-                # Explicitly mark the safety check as acknowledged.
-                extra_fr_fields["safety_acknowledgement"] = "true"
-            if self._verbose:
-                with console.status(
-                    "Sending command to Computer...", spinner_style=None
-                ):
-                    fc_result = self.handle_action(function_call)
-            else:
-                fc_result = self.handle_action(function_call)
-            if isinstance(fc_result, EnvState):
-                function_responses.append(
-                    FunctionResponse(
-                        name=function_call.name,
-                        response={
-                            "url": fc_result.url,
-                            **extra_fr_fields,
-                        },
-                        parts=[
-                            types.FunctionResponsePart(
-                                inline_data=types.FunctionResponseBlob(
-                                    mime_type="image/png", data=fc_result.screenshot
-                                )
-                            )
-                        ],
-                    )
-                )
-            elif isinstance(fc_result, dict):
-                function_responses.append(
-                    FunctionResponse(name=function_call.name, response=fc_result)
-                )
-
-        self._contents.append(
-            Content(
-                role="user",
-                parts=[Part(function_response=fr) for fr in function_responses],
+            # Append model response to message history
+            self._messages.append(
+                {"role": "assistant", "content": json.dumps(action)}
             )
-        )
 
-        # only keep screenshots in the few most recent turns, remove the screenshot images from the old turns.
-        turn_with_screenshots_found = 0
-        for content in reversed(self._contents):
-            if content.role == "user" and content.parts:
-                # check if content has screenshot of the predefined computer use functions.
-                has_screenshot = False
-                for part in content.parts:
-                    if (
-                        part.function_response
-                        and part.function_response.parts
-                        and part.function_response.name
-                        in PREDEFINED_COMPUTER_USE_FUNCTIONS
-                    ):
-                        has_screenshot = True
-                        break
+            # 5. Check for done
+            if action.get("action") == "done":
+                yield _emit("log", {"message": f"Task complete: {action.get('reason', '')}"})
+                _append_log(
+                    {
+                        "task": task,
+                        "iterations": iteration,
+                        "result": "done",
+                        "reason": action.get("reason", ""),
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                )
+                break
 
-                if has_screenshot:
-                    turn_with_screenshots_found += 1
-                    # remove the screenshot image if the number of screenshots exceed the limit.
-                    if turn_with_screenshots_found > MAX_RECENT_TURN_WITH_SCREENSHOTS:
-                        for part in content.parts:
-                            if (
-                                part.function_response
-                                and part.function_response.parts
-                                and part.function_response.name
-                                in PREDEFINED_COMPUTER_USE_FUNCTIONS
-                            ):
-                                part.function_response.parts = None
+            # 6. Safety check
+            if _is_dangerous(action) and not confirm_action(action):
+                yield _emit("log", {"message": "Action cancelled by user."})
+                _append_log(
+                    {
+                        "task": task,
+                        "iterations": iteration,
+                        "result": "cancelled",
+                        "action": action,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                )
+                break
 
-        return "CONTINUE"
+            # 7. Execute action
+            try:
+                result = self.computer.execute_action(action)
+                yield _emit(
+                    "log", {"message": f"Action executed: {action.get('action')} → {result}"}
+                )
+            except Exception as exc:
+                yield _emit("log", {"message": f"Execution error: {exc}"})
+                self._messages.append(
+                    {
+                        "role": "user",
+                        "content": f"The action failed with error: {exc}. Please try a different approach.",
+                    }
+                )
 
-    def _get_safety_confirmation(
-        self, safety: dict[str, Any]
-    ) -> Literal["CONTINUE", "TERMINATE"]:
-        if safety["decision"] != "require_confirmation":
-            raise ValueError(f"Unknown safety decision: safety['decision']")
-        termcolor.cprint(
-            "Safety service requires explicit confirmation!",
-            color="yellow",
-            attrs=["bold"],
-        )
-        print(safety["explanation"])
-        decision = ""
-        while decision.lower() not in ("y", "n", "ye", "yes", "no"):
-            decision = input("Do you wish to proceed? [Yes]/[No]\n")
-        if decision.lower() in ("n", "no"):
-            return "TERMINATE"
-        return "CONTINUE"
+            # 8. Update history
+            self.history.append(
+                {
+                    "iteration": iteration,
+                    "ocr_count": len(ocr_elements),
+                    "action": action,
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            )
 
-    def agent_loop(self):
-        status = "CONTINUE"
-        while status == "CONTINUE":
-            status = self.run_one_iteration()
+            # Brief pause between iterations
+            time.sleep(0.5)
+        else:
+            yield _emit(
+                "log",
+                {"message": f"Max iterations ({self.max_iterations}) reached."},
+            )
 
-    def denormalize_x(self, x: int) -> int:
-        return int(x / 1000 * self._browser_computer.screen_size()[0])
+        yield _emit("done", {"iterations": len(self.history), "task": task})
 
-    def denormalize_y(self, y: int) -> int:
-        return int(y / 1000 * self._browser_computer.screen_size()[1])

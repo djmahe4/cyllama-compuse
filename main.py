@@ -1,83 +1,88 @@
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+#!/usr/bin/env python3
+"""
+CYLLAMA COMPUSE — Main CLI entry point
+
+Runs the desktop automation agent and streams JSON events to stdout
+so the Node.js TUI can consume them.
+"""
+
 import argparse
+import json
 import os
+import sys
+import logging
 
-from agent import BrowserAgent
-from computers import BrowserbaseComputer, PlaywrightComputer
-
-
-PLAYWRIGHT_SCREEN_SIZE = (1440, 900)
+from agent import DesktopAgent
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the browser agent with a query.")
-    parser.add_argument(
-        "--query",
-        type=str,
-        required=True,
-        help="The query for the browser agent to execute.",
-    )
-
-    parser.add_argument(
-        "--env",
-        type=str,
-        choices=("playwright", "browserbase"),
-        default="playwright",
-        help="The computer use environment to use.",
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="CYLLAMA COMPUSE — Ollama desktop automation agent"
     )
     parser.add_argument(
-        "--initial_url",
-        type=str,
-        default="https://www.google.com",
-        help="The inital URL loaded for the computer.",
-    )
-    parser.add_argument(
-        "--highlight_mouse",
-        action="store_true",
-        default=False,
-        help="If possible, highlight the location of the mouse.",
+        "task",
+        nargs="?",
+        default=None,
+        help="Task description for the agent to execute",
     )
     parser.add_argument(
         "--model",
-        default='gemini-2.5-computer-use-preview-10-2025',
-        help="Set which main model to use.",
+        default=os.environ.get("MODEL_NAME", "llama3:8b"),
+        help="Ollama model to use (default: llama3:8b)",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=30,
+        help="Maximum agent loop iterations (default: 30)",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Run in interactive mode (prompt for task)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging",
+    )
+    return parser.parse_args()
 
-    if args.env == "playwright":
-        env = PlaywrightComputer(
-            screen_size=PLAYWRIGHT_SCREEN_SIZE,
-            initial_url=args.initial_url,
-            highlight_mouse=args.highlight_mouse,
-        )
-    elif args.env == "browserbase":
-        env = BrowserbaseComputer(
-            screen_size=PLAYWRIGHT_SCREEN_SIZE,
-            initial_url=args.initial_url
-        )
-    else:
-        raise ValueError("Unknown environment: ", args.env)
 
-    with env as browser_computer:
-        agent = BrowserAgent(
-            browser_computer=browser_computer,
-            query=args.query,
-            model_name=args.model,
+def main() -> None:
+    args = parse_args()
+
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+    task = args.task
+    if not task:
+        if args.interactive and sys.stdin.isatty():
+            task = input("Enter task: ").strip()
+        else:
+            # Read task from stdin (piped from Node.js)
+            task = sys.stdin.readline().strip()
+
+    if not task:
+        print(
+            json.dumps({"type": "log", "data": {"message": "No task provided."}}),
+            flush=True,
         )
-        agent.agent_loop()
-    return 0
+        sys.exit(1)
+
+    agent = DesktopAgent(
+        task=task,
+        model=args.model,
+        max_iterations=args.max_iterations,
+    )
+
+    for event in agent.run_task():
+        print(json.dumps(event), flush=True)
 
 
 if __name__ == "__main__":
