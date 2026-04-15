@@ -1,7 +1,18 @@
-termcolor==3.1.0
-pydantic==2.12.0
-google-genai>=1.40.0
-playwright==1.55.0
-browserbase==1.4.0
-rich
-pytest
+# Core agent
+requests>=2.31.0
+pydantic>=2.12.0
+
+# Desktop control
+pyautogui>=0.9.54
+Pillow>=10.2.0
+
+# OCR
+easyocr>=1.7.0
+
+# CLI & formatting
+rich>=13.0.0
+termcolor>=2.4.0
+
+# Testing
+pytest>=8.0.0
+pytest-mock>=3.14.0

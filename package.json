@@ -1,0 +1,38 @@
+{
+  "name": "cyllama-compuse",
+  "version": "1.0.0",
+  "description": "Cyberpunk desktop automation agent powered by Ollama — local, offline-capable AI desktop control",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx main.ts",
+    "test": "node --test dist/**/*.test.js",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "ollama",
+    "desktop-automation",
+    "cyberpunk",
+    "ai-agent",
+    "pyautogui",
+    "ocr",
+    "tui"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "ink": "^5.1.0",
+    "react": "^18.3.1",
+    "figlet": "^1.8.0",
+    "chalk": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.2",
+    "@types/react": "^18.3.18",
+    "@types/figlet": "^1.7.0",
+    "typescript": "^5.8.3",
+    "tsx": "^4.19.3"
+  }
+}

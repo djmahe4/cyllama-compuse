@@ -175,3 +175,7 @@ cython_debug/
 
 # Node stuff
 node_modules/
+
+# Cyllama logs & env
+logs/
+.env
