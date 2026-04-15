@@ -28,7 +28,7 @@ export function spawnAgent(task: string, model?: string): ChildProcess {
   if (model) {
     args.push("--model", model);
   }
-  const child = spawn("python3", args, {
+  const child = spawn(process.platform === "win32" ? "python" : "python3", args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env },
   });
