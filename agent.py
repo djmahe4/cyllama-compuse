@@ -214,6 +214,10 @@ class DesktopAgent:
 
             yield _emit("ocr", {"elements": ocr_elements})
 
+            # Sort elements by position (top-to-bottom, left-to-right) before truncation
+            sorted_elements = sorted(ocr_elements, key=lambda e: (e["y"], e["x"]))
+            
+            ocr_summary = json.dumps(sorted_elements[:50])
             # 3. Build prompt with OCR context
             ocr_summary = json.dumps(ocr_elements[:50])  # limit to 50 elements
             self._messages.append(
