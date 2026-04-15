@@ -5,7 +5,7 @@
  * Receives events from the spawned Python agent process.
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useApp } from "ink";
 import type { ChildProcess } from "node:child_process";
 import * as readline from "node:readline";
@@ -15,11 +15,34 @@ import TaskInput from "./TaskInput.js";
 import LogPanel from "./LogPanel.js";
 import OCRPanel from "./OCRPanel.js";
 import StatusBar from "./StatusBar.js";
+import ConfirmationModal from "./ConfirmationModal.js";
 
-interface AgentEvent {
+// ---------------------------------------------------------------------------
+// Event types
+// ---------------------------------------------------------------------------
+
+interface StandardAgentEvent {
   type: "log" | "action" | "ocr" | "done";
   data: Record<string, unknown>;
 }
+
+interface ConfirmationRequestEvent {
+  type: "confirmation_request";
+  action: Record<string, unknown>;
+  message: string;
+  timestamp: number;
+}
+
+type AgentEvent = StandardAgentEvent | ConfirmationRequestEvent;
+
+interface PendingConfirmation {
+  message: string;
+  action: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 interface AppProps {
   task: string;
@@ -33,6 +56,19 @@ export default function App({ task, agentProcess }: AppProps) {
   const [status, setStatus] = useState<string>("running");
   const [lastAction, setLastAction] = useState<string>("");
   const [iteration, setIteration] = useState(0);
+  const [pendingConfirmation, setPendingConfirmation] =
+    useState<PendingConfirmation | null>(null);
+
+  /** Write CONFIRM:y or CONFIRM:n back to the agent process stdin. */
+  const handleConfirmation = useCallback(
+    (confirmed: boolean) => {
+      setPendingConfirmation(null);
+      if (agentProcess.stdin) {
+        agentProcess.stdin.write((confirmed ? "CONFIRM:y" : "CONFIRM:n") + "\n");
+      }
+    },
+    [agentProcess]
+  );
 
   useEffect(() => {
     if (!agentProcess.stdout) return;
@@ -45,7 +81,8 @@ export default function App({ task, agentProcess }: AppProps) {
 
         switch (event.type) {
           case "log": {
-            const msg = (event.data as { message?: string }).message ?? "";
+            const e = event as StandardAgentEvent;
+            const msg = (e.data?.message as string) ?? "";
             setLogs((prev) => [...prev.slice(-100), msg]);
             if (msg.startsWith("--- Iteration")) {
               const m = msg.match(/Iteration (\d+)/);
@@ -53,12 +90,24 @@ export default function App({ task, agentProcess }: AppProps) {
             }
             break;
           }
-          case "action":
-            setLastAction(JSON.stringify(event.data));
+          case "action": {
+            const e = event as StandardAgentEvent;
+            setLastAction(JSON.stringify(e.data));
             break;
-          case "ocr":
-            setOcrElements((event.data as { elements?: unknown[] }).elements ?? []);
+          }
+          case "ocr": {
+            const e = event as StandardAgentEvent;
+            setOcrElements((e.data?.elements as unknown[]) ?? []);
             break;
+          }
+          case "confirmation_request": {
+            const e = event as ConfirmationRequestEvent;
+            setPendingConfirmation({
+              message: e.message ?? "⚠️ Dangerous action — confirm?",
+              action: e.action ?? {},
+            });
+            break;
+          }
           case "done":
             setStatus("done");
             break;
@@ -97,6 +146,13 @@ export default function App({ task, agentProcess }: AppProps) {
         iteration={iteration}
         lastAction={lastAction}
       />
+      {pendingConfirmation && (
+        <ConfirmationModal
+          message={pendingConfirmation.message}
+          onConfirm={handleConfirmation}
+        />
+      )}
     </Box>
   );
 }
+

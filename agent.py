@@ -10,6 +10,7 @@ import sys
 import json
 import time
 import logging
+import threading
 from typing import Generator, Optional
 
 import requests
@@ -27,8 +28,22 @@ MAX_ITERATIONS = 30
 LOG_DIR = os.environ.get("LOG_DIR", "logs")
 LOG_FILE = os.environ.get("LOG_FILE", "agent-history.json")
 
-# Actions considered dangerous and requiring confirmation
-DANGEROUS_ACTIONS = {"hotkey", "type"}
+# Whether to request confirmation before dangerous actions.
+# Evaluated once at import time; patch ``agent.CONFIRM_DANGEROUS`` in tests.
+CONFIRM_DANGEROUS: bool = os.environ.get("CONFIRM_DANGEROUS", "true").lower() != "false"
+
+# Seconds to wait for a TUI confirmation response before auto-denying.
+CONFIRMATION_TIMEOUT_S: int = 30
+
+# Actions considered dangerous and requiring user confirmation
+DANGEROUS_ACTIONS = {
+    "type",
+    "hotkey",
+    "type_text",
+    "press_key",
+    "double_click",
+    "right_click",
+}
 
 SYSTEM_PROMPT = """\
 You are CYLLAMA COMPUSE, an AI desktop automation agent.
@@ -135,25 +150,87 @@ def _is_dangerous(action: dict) -> bool:
     return action.get("action") in DANGEROUS_ACTIONS
 
 
-def confirm_action(action: dict) -> bool:
-    """Prompt the user to confirm a dangerous action.
-
-    Returns True if the user confirms, False otherwise.  When
-    ``CONFIRM_DANGEROUS`` env var is ``false`` confirmation is skipped.
-    """
-    if os.environ.get("CONFIRM_DANGEROUS", "true").lower() == "false":
-        return True
-    print(
-        json.dumps(
-            _emit("log", {"message": f"⚠️  Confirm action: {json.dumps(action)}"})
-        ),
-        flush=True,
+def _log_safety_decision(action: dict, approved: bool) -> None:
+    """Persist a safety confirmation decision to the action log."""
+    _append_log(
+        {
+            "event": "safety_decision",
+            "action": action,
+            "approved": approved,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
     )
-    # In non-interactive (piped) mode, auto-confirm
-    if not sys.stdin.isatty():
-        return True
-    answer = input("Proceed? [y/N] ").strip().lower()
-    return answer in ("y", "yes")
+
+
+def request_confirmation(action: dict) -> bool:
+    """Request confirmation for a dangerous action.
+
+    Emits a ``confirmation_request`` JSON event to stdout so the TUI (or any
+    listener) can display a prompt, then reads the response from stdin.
+
+    Behaviour:
+
+    * **TTY mode** (direct CLI): prompts on stderr and reads y/n from stdin.
+    * **Non-TTY mode** (piped / TUI): waits up to ``CONFIRMATION_TIMEOUT_S``
+      seconds for a ``CONFIRM:y`` or ``CONFIRM:n`` line on stdin.
+    * Defaults to **False** (deny) on timeout, empty response, or any error.
+
+    All decisions are logged via :func:`_log_safety_decision`.
+    """
+    # Emit the structured event so the TUI (or any stdout consumer) can react.
+    event_payload = {
+        "type": "confirmation_request",
+        "action": action,
+        "message": f"⚠️ Dangerous action: {action.get('action')} — confirm? [y/N]",
+        "timestamp": time.time(),
+    }
+    print(json.dumps(event_payload), flush=True)
+
+    approved: bool = False
+
+    if sys.stdin.isatty():
+        # Interactive CLI — prompt on stderr so stdout stays clean (JSON events).
+        try:
+            print(
+                f"⚠️  Dangerous action: {json.dumps(action)}\nProceed? [y/N] ",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
+            answer = sys.stdin.readline().strip().lower()
+            approved = answer in ("y", "yes")
+        except Exception as exc:
+            logger.warning("Failed to read CLI confirmation: %s", exc)
+            approved = False
+    else:
+        # Non-TTY (TUI spawned) mode — wait for CONFIRM:y/n with a timeout.
+        result: list[bool] = [False]
+        done = threading.Event()
+
+        def _reader() -> None:
+            try:
+                line = sys.stdin.readline().strip()
+                if line.startswith("CONFIRM:"):
+                    result[0] = line.split(":", 1)[1].lower() in ("y", "yes")
+            except Exception as exc:
+                logger.warning("Failed to read TUI confirmation: %s", exc)
+            finally:
+                done.set()
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
+        timed_out = not done.wait(timeout=CONFIRMATION_TIMEOUT_S)
+
+        if timed_out:
+            logger.warning(
+                "Confirmation timed out after %ds for action: %s",
+                CONFIRMATION_TIMEOUT_S,
+                action,
+            )
+        approved = result[0]
+
+    _log_safety_decision(action, approved)
+    return approved
 
 
 # ---------------------------------------------------------------------------
@@ -214,12 +291,10 @@ class DesktopAgent:
 
             yield _emit("ocr", {"elements": ocr_elements})
 
-            # Sort elements by position (top-to-bottom, left-to-right) before truncation
-            sorted_elements = sorted(ocr_elements, key=lambda e: (e["y"], e["x"]))
-            
-            ocr_summary = json.dumps(sorted_elements[:50])
+            # Sort by position (top-to-bottom, left-to-right) before truncating.
+            sorted_elements = sorted(ocr_elements, key=lambda e: (e.get("y", 0), e.get("x", 0)))
             # 3. Build prompt with OCR context
-            ocr_summary = json.dumps(ocr_elements[:50])  # limit to 50 elements
+            ocr_summary = json.dumps(sorted_elements[:50])  # limit to 50 elements
             self._messages.append(
                 {
                     "role": "user",
@@ -261,19 +336,22 @@ class DesktopAgent:
                 )
                 break
 
-            # 6. Safety check
-            if _is_dangerous(action) and not confirm_action(action):
-                yield _emit("log", {"message": "Action cancelled by user."})
-                _append_log(
-                    {
-                        "task": task,
-                        "iterations": iteration,
-                        "result": "cancelled",
-                        "action": action,
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    }
-                )
-                break
+            # 6. Safety check — must happen before execution
+            if CONFIRM_DANGEROUS and _is_dangerous(action):
+                approved = request_confirmation(action)
+                if not approved:
+                    yield _emit("log", {"message": f"⚠️ Action denied by user: {action.get('action')}"})
+                    # Inform the model so it can suggest an alternative approach.
+                    self._messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"The action '{action.get('action')}' was denied by the user "
+                                "for safety reasons. Please suggest a safer alternative approach."
+                            ),
+                        }
+                    )
+                    continue  # retry — don't execute the denied action
 
             # 7. Execute action
             try:

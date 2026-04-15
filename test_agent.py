@@ -8,6 +8,7 @@ so they can run in CI without a display server.
 import json
 import pytest
 from unittest.mock import patch, MagicMock
+from io import StringIO
 
 from agent import (
     DesktopAgent,
@@ -15,6 +16,7 @@ from agent import (
     parse_action,
     _is_dangerous,
     _emit,
+    request_confirmation,
 )
 
 

@@ -14,10 +14,19 @@ import * as path from "node:path";
 // Types
 // ---------------------------------------------------------------------------
 
-export interface AgentEvent {
+interface StandardAgentEvent {
   type: "log" | "action" | "ocr" | "done";
   data: Record<string, unknown>;
 }
+
+export interface ConfirmationRequestEvent {
+  type: "confirmation_request";
+  action: Record<string, unknown>;
+  message: string;
+  timestamp: number;
+}
+
+export type AgentEvent = StandardAgentEvent | ConfirmationRequestEvent;
 
 // ---------------------------------------------------------------------------
 // Python process management
@@ -38,7 +47,7 @@ export function spawnAgent(task: string, model?: string): ChildProcess {
 function parseEvent(line: string): AgentEvent | null {
   try {
     const obj = JSON.parse(line.trim());
-    if (obj && typeof obj.type === "string" && obj.data) {
+    if (obj && typeof obj.type === "string") {
       return obj as AgentEvent;
     }
   } catch {
@@ -81,31 +90,61 @@ async function renderPlain(task: string, model?: string): Promise<void> {
   console.log(`  ╚══════════════════════════════════════╝\n`);
   console.log(`  Task: ${task}\n`);
 
-  for await (const line of rl) {
-    const event = parseEvent(line);
-    if (event) {
-      switch (event.type) {
-        case "log":
-          console.log(`  [LOG] ${(event.data as { message?: string }).message ?? ""}`);
-          break;
-        case "action":
-          console.log(`  [ACT] ${JSON.stringify(event.data)}`);
-          break;
-        case "ocr":
-          console.log(
-            `  [OCR] ${((event.data as { elements?: unknown[] }).elements ?? []).length} elements detected`
-          );
-          break;
-        case "done":
-          console.log(`  [DONE] Agent finished.`);
-          break;
-      }
-    }
-  }
-
   child.stderr?.on("data", (buf: Buffer) => {
     process.stderr.write(buf);
   });
+
+  for await (const line of rl) {
+    const event = parseEvent(line);
+    if (!event) continue;
+
+    switch (event.type) {
+      case "log":
+        console.log(
+          `  [LOG] ${((event as StandardAgentEvent).data?.message as string) ?? ""}`
+        );
+        break;
+      case "action":
+        console.log(`  [ACT] ${JSON.stringify((event as StandardAgentEvent).data)}`);
+        break;
+      case "ocr":
+        console.log(
+          `  [OCR] ${(((event as StandardAgentEvent).data?.elements as unknown[]) ?? []).length} elements detected`
+        );
+        break;
+      case "confirmation_request": {
+        const crEvent = event as ConfirmationRequestEvent;
+        const msg = crEvent.message ?? "⚠️ Dangerous action — confirm? [y/N]";
+        console.log(`\n  ${msg}`);
+
+        let response = "CONFIRM:n"; // default deny
+        if (process.stdin.isTTY) {
+          // Interactive terminal — prompt the operator.
+          response = await new Promise<string>((resolve) => {
+            const userRl = readline.createInterface({
+              input: process.stdin,
+              output: process.stdout,
+            });
+            userRl.question("  Proceed? [y/N] ", (answer) => {
+              userRl.close();
+              resolve(
+                ["y", "yes"].includes(answer.trim().toLowerCase())
+                  ? "CONFIRM:y"
+                  : "CONFIRM:n"
+              );
+            });
+          });
+        } else {
+          console.log("  [SAFETY] Auto-denied (non-interactive mode).");
+        }
+        child.stdin?.write(response + "\n");
+        break;
+      }
+      case "done":
+        console.log(`  [DONE] Agent finished.`);
+        break;
+    }
+  }
 
   await new Promise<void>((resolve) => child.on("close", () => resolve()));
 }
