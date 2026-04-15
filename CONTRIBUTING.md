@@ -1,33 +1,42 @@
-# How to contribute
+# Contributing to CYLLAMA COMPUSE
 
-We'd love to accept your patches and contributions to this project.
+Thank you for your interest in contributing! Here's how to get started.
 
-## Before you begin
+## How to contribute
 
-### Sign our Contributor License Agreement
+1. **Fork** the repository.
+2. **Create a branch** for your feature or fix.
+3. **Make changes** — ensure tests pass (`pytest test_agent.py test_main.py -v`).
+4. **Open a Pull Request** with a clear description.
 
-Contributions to this project must be accompanied by a
-[Contributor License Agreement](https://cla.developers.google.com/about) (CLA).
-You (or your employer) retain the copyright to your contribution; this simply
-gives us permission to use and redistribute your contributions as part of the
-project.
+## Development setup
 
-If you or your current employer have already signed the Google CLA (even if it
-was for a different project), you probably don't need to do it again.
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+npm install
+```
 
-Visit <https://cla.developers.google.com/> to see your current agreements or to
-sign a new one.
+## Code style
 
-### Review our community guidelines
+- Python: follow PEP 8 conventions.
+- TypeScript: standard TS strict mode.
+- Keep functions small and well-documented.
 
-This project follows
-[Google's Open Source Community Guidelines](https://opensource.google/conduct/).
+## Testing
 
-## Contribution process
+Run the test suite before submitting a PR:
 
-### Code reviews
+```bash
+pytest test_agent.py test_main.py -v
+npm run build
+```
 
-All submissions, including submissions by project members, require review. We
-use GitHub pull requests for this purpose. Consult
-[GitHub Help](https://help.github.com/articles/about-pull-requests/) for more
-information on using pull requests.
+## Code reviews
+
+All submissions require review. We use GitHub pull requests for this purpose.
+
+## Community guidelines
+
+Be respectful, constructive, and inclusive.

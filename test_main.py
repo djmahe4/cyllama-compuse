@@ -1,69 +1,80 @@
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""
+Tests for the CYLLAMA COMPUSE main CLI module.
+"""
 
-import unittest
+import json
+import sys
+import pytest
 from unittest.mock import patch, MagicMock
+from io import StringIO
+
 import main
 
-class TestMain(unittest.TestCase):
 
-    @patch('main.argparse.ArgumentParser')
-    @patch('main.PlaywrightComputer')
-    @patch('main.BrowserAgent')
-    def test_main_playwright(self, mock_browser_agent, mock_playwright_computer, mock_arg_parser):
-        mock_args = MagicMock()
-        mock_args.env = 'playwright'
-        mock_args.initial_url = 'test_url'
-        mock_args.highlight_mouse = True
-        mock_args.query = 'test_query'
-        mock_args.model = 'test_model'
-        mock_args.api_server = None
-        mock_args.api_server_key = None
-        mock_arg_parser.return_value.parse_args.return_value = mock_args
+class TestParseArgs:
+    def test_task_argument(self):
+        with patch("sys.argv", ["main.py", "open notepad"]):
+            args = main.parse_args()
+            assert args.task == "open notepad"
 
-        main.main()
+    def test_model_flag(self):
+        with patch("sys.argv", ["main.py", "task", "--model", "llama3:70b"]):
+            args = main.parse_args()
+            assert args.model == "llama3:70b"
 
-        mock_playwright_computer.assert_called_once_with(
-            screen_size=main.PLAYWRIGHT_SCREEN_SIZE,
-            initial_url='test_url',
-            highlight_mouse=True
+    def test_max_iterations(self):
+        with patch("sys.argv", ["main.py", "task", "--max-iterations", "10"]):
+            args = main.parse_args()
+            assert args.max_iterations == 10
+
+    def test_interactive_flag(self):
+        with patch("sys.argv", ["main.py", "--interactive"]):
+            args = main.parse_args()
+            assert args.interactive is True
+
+    def test_verbose_flag(self):
+        with patch("sys.argv", ["main.py", "task", "--verbose"]):
+            args = main.parse_args()
+            assert args.verbose is True
+
+
+class TestMain:
+    @patch("main.DesktopAgent")
+    def test_main_with_task(self, mock_agent_cls):
+        mock_agent = MagicMock()
+        mock_agent.run_task.return_value = iter(
+            [
+                {"type": "log", "data": {"message": "starting"}},
+                {"type": "done", "data": {"iterations": 1, "task": "test"}},
+            ]
         )
-        mock_browser_agent.assert_called_once()
-        mock_browser_agent.return_value.agent_loop.assert_called_once()
+        mock_agent_cls.return_value = mock_agent
 
-    @patch('main.argparse.ArgumentParser')
-    @patch('main.BrowserbaseComputer')
-    @patch('main.BrowserAgent')
-    def test_main_browserbase(self, mock_browser_agent, mock_browserbase_computer, mock_arg_parser):
-        mock_args = MagicMock()
-        mock_args.env = 'browserbase'
-        mock_args.query = 'test_query'
-        mock_args.model = 'test_model'
-        mock_args.api_server = None
-        mock_args.api_server_key = None
-        mock_args.initial_url = 'test_url'
-        mock_args.highlight_mouse = False
-        mock_arg_parser.return_value.parse_args.return_value = mock_args
+        captured = StringIO()
+        with (
+            patch("sys.argv", ["main.py", "test task"]),
+            patch("sys.stdout", captured),
+        ):
+            main.main()
 
-        main.main()
+        mock_agent_cls.assert_called_once()
+        assert mock_agent_cls.call_args.kwargs["task"] == "test task"
+        mock_agent.run_task.assert_called_once()
 
-        mock_browserbase_computer.assert_called_once_with(
-            screen_size=main.PLAYWRIGHT_SCREEN_SIZE,
-            initial_url='test_url'
-        )
-        mock_browser_agent.assert_called_once()
-        mock_browser_agent.return_value.agent_loop.assert_called_once()
+    @patch("main.DesktopAgent")
+    def test_main_no_task_exits(self, mock_agent_cls):
+        """When no task is provided and stdin is empty, main exits with code 1."""
+        with (
+            patch("sys.argv", ["main.py"]),
+            patch("sys.stdin", StringIO("")),
+            patch("sys.stdout", StringIO()),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main.main()
 
-if __name__ == '__main__':
-    unittest.main()
+        assert exc_info.value.code == 1
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])
+

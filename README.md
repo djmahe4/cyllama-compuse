@@ -1,171 +1,240 @@
-# Computer Use Preview
+# CYLLAMA COMPUSE
+
+> **Cy**ber O**llama** **Comp**uter **Use** — A fully local, offline-capable desktop automation agent.
+
+```
+ ██████╗██╗   ██╗██╗     ██╗      █████╗ ███╗   ███╗ █████╗
+██╔════╝╚██╗ ██╔╝██║     ██║     ██╔══██╗████╗ ████║██╔══██╗
+██║      ╚████╔╝ ██║     ██║     ███████║██╔████╔██║███████║
+██║       ╚██╔╝  ██║     ██║     ██╔══██║██║╚██╔╝██║██╔══██║
+╚██████╗   ██║   ███████╗███████╗██║  ██║██║ ╚═╝ ██║██║  ██║
+ ╚═════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝
+    ██████╗ ██████╗ ███╗   ███╗██████╗ ██╗   ██╗███████╗███████╗
+   ██╔════╝██╔═══██╗████╗ ████║██╔══██╗██║   ██║██╔════╝██╔════╝
+   ██║     ██║   ██║██╔████╔██║██████╔╝██║   ██║███████╗█████╗
+   ██║     ██║   ██║██║╚██╔╝██║██╔═══╝ ██║   ██║╚════██║██╔══╝
+   ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║     ╚██████╔╝███████║███████╗
+    ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝      ╚═════╝ ╚══════╝╚══════╝
+```
+
+---
+
+## Features
+
+- **Fully Local** — Uses [Ollama](https://ollama.com) (Llama 3) for reasoning. No cloud APIs.
+- **Universal Desktop Control** — Drives ANY desktop application via PyAutoGUI.
+- **OCR Perception** — Reads the screen using EasyOCR.
+- **Cyberpunk TUI** — Neon-colored terminal interface built with Ink (React for CLI).
+- **Safety First** — Confirmation prompts for dangerous actions; full action logging.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    CYLLAMA COMPUSE                       │
+├─────────────┬───────────────────────────┬───────────────┤
+│  main.ts    │  main.py                  │  agent.py     │
+│  (Node TUI) │  (Python CLI)             │  (Agent Loop) │
+│             │                           │               │
+│  Spawns ────┤──► Receives task ─────────┤──► Loop:      │
+│  Python     │                           │   1. capture  │
+│  process    │  Streams JSON events ◄────┤   2. OCR      │
+│             │  to stdout                │   3. prompt   │
+│  Renders    │                           │   4. Ollama   │
+│  TUI from   │                           │   5. execute  │
+│  events     │                           │   6. repeat   │
+├─────────────┴───────────────────────────┴───────────────┤
+│  computers/desktop/desktop.py                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │  PyAutoGUI   │  │   EasyOCR    │  │   Pillow     │  │
+│  │  (control)   │  │   (perceive) │  │   (capture)  │  │
+│  └──────────────┘  └──────────────┘  └──────────────┘  │
+├─────────────────────────────────────────────────────────┤
+│  Ollama (localhost:11434)                               │
+│  └── llama3:8b (or any supported model)                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Quick Start
 
-This section will guide you through setting up and running the Computer Use Preview model, either the Gemini Developer API or Vertex AI. Follow these steps to get started.
+### Prerequisites
 
-### 1. Installation
+- **Python 3.10+**
+- **Node.js 18+** (for the TUI)
+- **Ollama** — [Install Ollama](https://ollama.com/download)
 
-**Clone the Repository**
+### 1. Clone the repo
 
 ```bash
-git clone https://github.com/google/computer-use-preview.git
-cd computer-use-preview
+git clone https://github.com/djmahe4/cyllama-compuse.git
+cd cyllama-compuse
 ```
 
-**Set up Python Virtual Environment and Install Dependencies**
+### 2. Install Python dependencies
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
-**Install Playwright and Browser Dependencies**
+### 3. Install Node.js dependencies
 
 ```bash
-# Install system dependencies required by Playwright for Chrome
-playwright install-deps chrome
-
-# Install the Chrome browser for Playwright
-playwright install chrome
+npm install
+npm run build
 ```
 
-### 2. Configuration
-You can get started using either the Gemini Developer API or Vertex AI.
-
-#### A. If using the Gemini Developer API:
-
-You need a Gemini API key to use the agent:
+### 4. Pull the Ollama model
 
 ```bash
-export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
+ollama pull llama3:8b
 ```
 
-Or to add this to your virtual environment:
+### 5. Configure environment
 
 ```bash
-echo 'export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"' >> .venv/bin/activate
-# After editing, you'll need to deactivate and reactivate your virtual
-# environment if it's already active:
-deactivate
-source .venv/bin/activate
+cp .env.example .env
+# Edit .env if needed
 ```
 
-Replace `YOUR_GEMINI_API_KEY` with your actual key.
+---
 
-#### B. If using the Vertex AI Client:
+## Usage
 
-You need to explicitly use Vertex AI, then provide project and location to use the agent:
+### Python CLI (direct)
 
 ```bash
-export USE_VERTEXAI=true
-export VERTEXAI_PROJECT="YOUR_PROJECT_ID"
-export VERTEXAI_LOCATION="YOUR_LOCATION"
+python main.py "open the calculator app and compute 42 * 17"
 ```
-
-Or to add this to your virtual environment:
 
 ```bash
-echo 'export USE_VERTEXAI=true' >> .venv/bin/activate
-echo 'export VERTEXAI_PROJECT="your-project-id"' >> .venv/bin/activate
-echo 'export VERTEXAI_LOCATION="your-location"' >> .venv/bin/activate
-# After editing, you'll need to deactivate and reactivate your virtual
-# environment if it's already active:
-deactivate
-source .venv/bin/activate
+python main.py --interactive
 ```
 
-Replace `YOUR_PROJECT_ID` and `YOUR_LOCATION` with your actual project and location.
-
-### 3. Running the Tool
-
-The primary way to use the tool is via the `main.py` script.
-
-**General Command Structure:**
+### Node.js TUI (cyberpunk interface)
 
 ```bash
-python main.py --query "Go to Google and type 'Hello World' into the search bar"
+npm start -- "search for weather in Tokyo"
 ```
 
-**Available Environments:**
-
-You can specify a particular environment with the ```--env <environment>``` flag.  Available options:
-
-- `playwright`: Runs the browser locally using Playwright.
-- `browserbase`: Connects to a Browserbase instance.
-
-**Local Playwright**
-
-Runs the agent using a Chrome browser instance controlled locally by Playwright.
+Or use the dev mode (no build step):
 
 ```bash
-python main.py --query="Go to Google and type 'Hello World' into the search bar" --env="playwright"
+npm run dev -- "open notepad and type hello world"
 ```
 
-You can also specify an initial URL for the Playwright environment:
+### CLI Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `task` | Task description (positional) | — |
+| `--model` | Ollama model name | `llama3:8b` |
+| `--max-iterations` | Max agent loop iterations | `30` |
+| `--interactive` | Prompt for task interactively | `false` |
+| `--verbose` | Enable debug logging | `false` |
+
+---
+
+## Example Tasks
 
 ```bash
-python main.py --query="Go to Google and type 'Hello World' into the search bar" --env="playwright" --initial_url="https://www.google.com/search?q=latest+AI+news"
+# Open browser and search
+python main.py "open Firefox and search for 'Python tutorials'"
+
+# File management
+python main.py "open the file manager and create a new folder called 'projects'"
+
+# Text editing
+python main.py "open a text editor and write a haiku about AI"
+
+# Calculator
+python main.py "open the calculator and compute 123 * 456"
 ```
 
-**Browserbase**
+---
 
-Runs the agent using Browserbase as the browser backend. Ensure the proper Browserbase environment variables are set:`BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`.
+## Configuration
+
+All settings are in `.env` (see `.env.example`):
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OLLAMA_HOST` | Ollama API endpoint | `http://localhost:11434` |
+| `MODEL_NAME` | Model to use | `llama3:8b` |
+| `OCR_ENGINE` | OCR backend | `easyocr` |
+| `CONFIRM_DANGEROUS` | Require confirmation | `true` |
+| `LOG_DIR` | Log directory | `logs` |
+| `LOG_FILE` | Log filename | `agent-history.json` |
+
+---
+
+## Project Structure
+
+```
+cyllama-compuse/
+├── .github/workflows/     # CI pipeline
+├── computers/
+│   ├── desktop/
+│   │   └── desktop.py     # PyAutoGUI + EasyOCR desktop control
+│   └── playwright/
+│       └── playwright.py  # Compatibility stub
+├── src/                   # TypeScript TUI components
+│   ├── App.tsx
+│   ├── Header.tsx
+│   ├── TaskInput.tsx
+│   ├── LogPanel.tsx
+│   ├── OCRPanel.tsx
+│   └── StatusBar.tsx
+├── agent.py               # Core agent loop (Ollama)
+├── main.py                # Python CLI entry point
+├── main.ts                # Node.js TUI entry point
+├── package.json
+├── requirements.txt
+├── tsconfig.json
+├── .env.example
+├── test_agent.py
+├── test_main.py
+├── README.md
+├── CONTRIBUTING.md
+└── LICENSE
+```
+
+---
+
+## Event Protocol
+
+The Python agent streams JSON events to stdout, consumed by the Node TUI:
+
+```json
+{"type": "log",    "data": {"message": "Starting task: ..."}}
+{"type": "ocr",    "data": {"elements": [{"text": "OK", "x": 100, "y": 200, "w": 40, "h": 20, "confidence": 0.95}]}}
+{"type": "action", "data": {"action": "click", "x": 100, "y": 200, "reason": "clicking OK button"}}
+{"type": "done",   "data": {"iterations": 5, "task": "..."}}
+```
+
+---
+
+## Safety
+
+- **Dangerous actions** (`type`, `hotkey`) require explicit confirmation
+- All actions are logged to `logs/agent-history.json`
+- Set `CONFIRM_DANGEROUS=false` to disable prompts (not recommended)
+
+---
+
+## Running Tests
 
 ```bash
-python main.py --query="Go to Google and type 'Hello World' into the search bar" --env="browserbase"
+pytest test_agent.py test_main.py -v
 ```
 
-**Available Models:**
+---
 
-You can choose the model to use by specifying the ```--model <model name>``` flag. Available options on Gemini Developer API and Vertex AI Client:
+## License
 
-- `gemini-2.5-computer-use-preview-10-2025`: This is the default model.
-- `gemini-3-flash-preview`: The preview version of Gemini 3 Flash.
-
-## Agent CLI
-
-The `main.py` script is the command-line interface (CLI) for running the browser agent.
-
-### Command-Line Arguments
-
-| Argument | Description | Required | Default | Supported Environment(s) |
-|-|-|-|-|-|
-| `--query` | The natural language query for the browser agent to execute. | Yes | N/A | All |
-| `--env` | The computer use environment to use. Must be one of the following: `playwright`, or `browserbase` | No | N/A | All |
-| `--initial_url` | The initial URL to load when the browser starts. | No | https://www.google.com | All |
-| `--highlight_mouse` | If specified, the agent will attempt to highlight the mouse cursor's position in the screenshots. This is useful for visual debugging. | No | False (not highlighted) | `playwright` |
-| `--model` | The model to use. See the "Available Models" section for more information. | No | `gemini-2.5-computer-use-preview-10-2025` | All |
-
-### Environment Variables
-
-| Variable | Description | Required |
-|-|-|-|
-| GEMINI_API_KEY | Your API key for the Gemini model. | Yes |
-| BROWSERBASE_API_KEY | Your API key for Browserbase. | Yes (when using the browserbase environment) |
-| BROWSERBASE_PROJECT_ID | Your Project ID for Browserbase. | Yes (when using the browserbase environment) |
-
-## Known Issues
-
-### Playwright Dropdown Menu
-
-On certain operating systems, the Playwright browser is unable to capture `<select>` elements because they are rendered by the operating system. As a result, the agent is unable to send the correct screenshot to the model.
-
-There are several ways to mitigate this.
-
-1. Use the Browserbase option instead of Playwright.
-2. Inject a script like [proxy-select](https://github.com/amitamb/proxy-select) to render a custom `<select>` element. You must inject `proxy-select.css` and `proxy-select.js` into each page that has a non-custom `<select>` element. You can do this in the [`Playwright.__enter__`](https://github.com/google-gemini/computer-use-preview/blob/main/computers/playwright/playwright.py#L100) method by adding a few lines of code, like the following (replacing `PROXY_SELECT_JS` and `PROXY_SELECT_CSS` with the appropriate variables):
-
-```python
-self._page.add_init_script(PROXY_SELECT_JS)
-def inject_style(page):
-    try:
-        page.add_style_tag(content=PROXY_SELECT_CSS)
-    except Exception as e:
-        print(f"Error injecting style: {e}")
-
-self._page.on('domcontentloaded', inject_style)
-```
-
-Note, option 2 does not work 100% of the time, but is a temporary workaround for certain websites. The better option is to use Browserbase.
+Apache 2.0 — see [LICENSE](LICENSE).
