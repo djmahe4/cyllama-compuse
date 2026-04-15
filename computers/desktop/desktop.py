@@ -94,12 +94,8 @@ class DesktopComputer:
         if reader is None:
             return []
 
-        # Convert PIL Image to bytes for EasyOCR
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        img_bytes = buf.getvalue()
-
-        results = reader.readtext(img_bytes)
+        # EasyOCR can process PIL images directly, avoiding redundant encoding/decoding
+        results = reader.readtext(image)
         elements: list[dict] = []
         for bbox, text, confidence in results:
             # bbox is [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
