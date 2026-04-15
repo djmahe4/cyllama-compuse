@@ -11,12 +11,21 @@ on:
 permissions:
   contents: read
 
-jobs:
-  test-python:
-    runs-on: ubuntu-latest
+# Force UTF-8 output on all platforms so Unicode in log messages works correctly.
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
 
+jobs:
+  # ─────────────────────────────────────────────────
+  # Python unit tests — ubuntu-latest + windows-latest
+  # ─────────────────────────────────────────────────
+  test-python:
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11"]
 
     steps:
@@ -34,11 +43,17 @@ jobs:
         pip install -r requirements.txt
 
     - name: Run pytest
-      run: |
-        pytest test_agent.py test_main.py -v
+      run: python -m pytest test_agent.py test_main.py -v
 
+  # ─────────────────────────────────────────────────
+  # TypeScript build — ubuntu-latest + windows-latest
+  # ─────────────────────────────────────────────────
   test-node:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     steps:
     - name: Check out repository

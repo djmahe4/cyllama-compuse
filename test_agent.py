@@ -199,3 +199,197 @@ class TestDesktopAgent:
         assert len(agent.history) == 1
         assert agent.history[0]["action"]["action"] == "click"
 
+
+# ---------------------------------------------------------------------------
+# TestRequestConfirmation — bidirectional safety-confirmation protocol
+# ---------------------------------------------------------------------------
+
+class TestRequestConfirmation:
+    """Tests for request_confirmation and its integration in the agent loop."""
+
+    def _make_action(self, action_type: str = "type") -> dict:
+        return {"action": action_type, "text": "test input", "reason": "testing"}
+
+    # ------------------------------------------------------------------
+    # Unit tests — request_confirmation in isolation
+    # ------------------------------------------------------------------
+
+    @patch("agent._append_log")
+    def test_emits_confirmation_request_event(self, mock_log, capsys):
+        """request_confirmation must emit a confirmation_request JSON event to stdout."""
+        action = self._make_action()
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "CONFIRM:n\n"
+            request_confirmation(action)
+
+        captured = capsys.readouterr()
+        event = json.loads(captured.out.strip())
+        assert event["type"] == "confirmation_request"
+        assert event["action"]["action"] == "type"
+        assert "Dangerous action" in event["message"]
+        assert "timestamp" in event
+
+    @patch("agent._append_log")
+    def test_confirm_y_returns_true(self, mock_log, capsys):
+        """CONFIRM:y response must approve the action (return True)."""
+        action = self._make_action("hotkey")
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "CONFIRM:y\n"
+            result = request_confirmation(action)
+        assert result is True
+
+    @patch("agent._append_log")
+    def test_confirm_yes_returns_true(self, mock_log, capsys):
+        """CONFIRM:yes (full word) must also approve."""
+        action = self._make_action()
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "CONFIRM:yes\n"
+            result = request_confirmation(action)
+        assert result is True
+
+    @patch("agent._append_log")
+    def test_confirm_n_returns_false(self, mock_log, capsys):
+        """CONFIRM:n response must deny the action (return False)."""
+        action = self._make_action()
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "CONFIRM:n\n"
+            result = request_confirmation(action)
+        assert result is False
+
+    @patch("agent._append_log")
+    def test_empty_response_returns_false(self, mock_log, capsys):
+        """An empty line must default to deny."""
+        action = self._make_action()
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "\n"
+            result = request_confirmation(action)
+        assert result is False
+
+    @patch("agent._append_log")
+    def test_garbage_prefix_returns_false(self, mock_log, capsys):
+        """A line without the CONFIRM: prefix must default to deny."""
+        action = self._make_action()
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "yes\n"
+            result = request_confirmation(action)
+        assert result is False
+
+    @patch("agent._append_log")
+    def test_logs_approved_decision(self, mock_log, capsys):
+        """Every approval decision must be persisted via _append_log."""
+        action = self._make_action()
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "CONFIRM:y\n"
+            request_confirmation(action)
+
+        mock_log.assert_called_once()
+        logged = mock_log.call_args[0][0]
+        assert logged["event"] == "safety_decision"
+        assert logged["approved"] is True
+
+    @patch("agent._append_log")
+    def test_logs_denied_decision(self, mock_log, capsys):
+        """Every denial decision must also be persisted."""
+        action = self._make_action()
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "CONFIRM:n\n"
+            request_confirmation(action)
+
+        mock_log.assert_called_once()
+        logged = mock_log.call_args[0][0]
+        assert logged["event"] == "safety_decision"
+        assert logged["approved"] is False
+
+    # ------------------------------------------------------------------
+    # Integration tests — agent loop honours confirmation results
+    # ------------------------------------------------------------------
+
+    @patch("agent.call_ollama")
+    @patch("agent._append_log")
+    def test_dangerous_action_blocked_in_agent_loop(self, mock_log, mock_ollama):
+        """Agent loop must NOT call execute_action when confirmation is denied."""
+        mock_ollama.side_effect = [
+            '{"action": "type", "text": "rm -rf /", "reason": "dangerous"}',
+            '{"action": "done", "reason": "finished"}',
+        ]
+        mock_computer = MagicMock()
+        mock_computer.capture_screen.return_value = MagicMock()
+        mock_computer.run_ocr.return_value = []
+
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "CONFIRM:n\n"
+            with patch("agent.CONFIRM_DANGEROUS", True):
+                agent = DesktopAgent(
+                    task="dangerous task",
+                    computer=mock_computer,
+                    max_iterations=3,
+                )
+                events = list(agent.run_task())
+
+        mock_computer.execute_action.assert_not_called()
+        denied_msgs = [
+            e for e in events
+            if e["type"] == "log" and "denied" in e["data"].get("message", "").lower()
+        ]
+        assert len(denied_msgs) >= 1
+
+    @patch("agent.call_ollama")
+    @patch("agent._append_log")
+    def test_dangerous_action_proceeds_when_confirmed(self, mock_log, mock_ollama):
+        """Agent loop must call execute_action when the user confirms."""
+        mock_ollama.side_effect = [
+            '{"action": "type", "text": "hello world", "reason": "typing"}',
+            '{"action": "done", "reason": "done"}',
+        ]
+        mock_computer = MagicMock()
+        mock_computer.capture_screen.return_value = MagicMock()
+        mock_computer.run_ocr.return_value = []
+        mock_computer.execute_action.return_value = "typed"
+
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.readline.return_value = "CONFIRM:y\n"
+            with patch("agent.CONFIRM_DANGEROUS", True):
+                agent = DesktopAgent(
+                    task="type task",
+                    computer=mock_computer,
+                    max_iterations=3,
+                )
+                events = list(agent.run_task())
+
+        mock_computer.execute_action.assert_called_once()
+
+    @patch("agent.call_ollama")
+    @patch("agent._append_log")
+    def test_confirm_dangerous_false_skips_prompt(self, mock_log, mock_ollama):
+        """When CONFIRM_DANGEROUS is False, dangerous actions run without prompting."""
+        mock_ollama.side_effect = [
+            '{"action": "type", "text": "hello", "reason": "typing"}',
+            '{"action": "done", "reason": "done"}',
+        ]
+        mock_computer = MagicMock()
+        mock_computer.capture_screen.return_value = MagicMock()
+        mock_computer.run_ocr.return_value = []
+        mock_computer.execute_action.return_value = "typed"
+
+        with patch("agent.CONFIRM_DANGEROUS", False):
+            agent = DesktopAgent(
+                task="type without confirm",
+                computer=mock_computer,
+                max_iterations=3,
+            )
+            events = list(agent.run_task())
+
+        # execute_action called without any stdin interaction
+        mock_computer.execute_action.assert_called_once()
+
+

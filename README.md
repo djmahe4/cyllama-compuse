@@ -217,13 +217,116 @@ The Python agent streams JSON events to stdout, consumed by the Node TUI:
 {"type": "done",   "data": {"iterations": 5, "task": "..."}}
 ```
 
+Dangerous actions also emit a **flat** confirmation-request event (not nested under `data`):
+
+```json
+{
+  "type": "confirmation_request",
+  "action": {"action": "type", "text": "...", "reason": "..."},
+  "message": "⚠️ Dangerous action: type — confirm? [y/N]",
+  "timestamp": 1712345678.9
+}
+```
+
+The TUI/CLI must then write one of the following to the agent's **stdin** to unblock it:
+
+```
+CONFIRM:y    ← approve
+CONFIRM:n    ← deny (default if nothing is received within 30 s)
+```
+
 ---
 
-## Safety
+## Safety Protocol
 
-- **Dangerous actions** (`type`, `hotkey`) require explicit confirmation
-- All actions are logged to `logs/agent-history.json`
-- Set `CONFIRM_DANGEROUS=false` to disable prompts (not recommended)
+### How it works
+
+All dangerous actions require **explicit confirmation** before they are executed.
+The agent never silently proceeds — it defaults to **deny** on any ambiguity.
+
+```
+  Python agent (agent.py)              Node TUI (main.ts / App.tsx)
+  ──────────────────────────           ──────────────────────────────
+  detects dangerous action
+        │
+        ▼
+  print confirmation_request  ──────►  parse event from stdout
+  event to stdout                       │
+        │                               ▼
+        │                         show ConfirmationModal
+  block on stdin.readline()      (or prompt in plain mode)
+        │                               │
+        │         CONFIRM:y / CONFIRM:n │
+        ◄───────────────────────────────┘
+        │
+        ▼
+  approved? → execute  /  denied? → continue loop, inform model
+```
+
+### Dangerous actions
+
+The following action types trigger a confirmation prompt:
+
+| Action | Description |
+|--------|-------------|
+| `type` | Types text via keyboard |
+| `hotkey` | Presses a key combination |
+| `type_text` | Alias used by some model outputs |
+| `press_key` | Single key press |
+| `double_click` | Double-click (can trigger launchers) |
+| `right_click` | Context-menu click |
+
+### CLI mode (TTY)
+
+When running directly from a terminal (`python main.py`), the prompt appears on
+**stderr** (keeping stdout clean for JSON events) and the user types `y` or `n`:
+
+```
+⚠️  Dangerous action: {"action": "type", "text": "hello"}
+Proceed? [y/N]
+```
+
+### TUI mode (Node.js)
+
+When spawned by `main.ts`, a **ConfirmationModal** overlay appears:
+
+```
+╔══════════════════════════════════════════════╗
+║   ⚠ ⚠ ⚠  DANGEROUS ACTION DETECTED  ⚠ ⚠ ⚠  ║
+║  ⚠️ Dangerous action: type — confirm? [y/N]  ║
+║                                              ║
+║    [ Y ]  CONFIRM      [ N / ESC ]  DENY     ║
+╚══════════════════════════════════════════════╝
+```
+
+The modal captures keyboard input; `Y` confirms, `N` or `Esc` denies.
+
+### Timeout
+
+If no response is received within **30 seconds** the action is **automatically denied**.
+
+### Logging
+
+Every confirmation decision (approved or denied) is appended to
+`logs/agent-history.json`:
+
+```json
+{
+  "event": "safety_decision",
+  "action": {"action": "type", "text": "hello"},
+  "approved": false,
+  "timestamp": "2026-04-15T05:00:00Z"
+}
+```
+
+### Disable confirmations
+
+Set `CONFIRM_DANGEROUS=false` in `.env` to skip prompts entirely (not recommended
+for production use):
+
+```bash
+CONFIRM_DANGEROUS=false python main.py "my task"
+```
 
 ---
 
