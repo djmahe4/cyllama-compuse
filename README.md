@@ -169,7 +169,7 @@ All settings are in `.env` (see `.env.example`):
 | `OCR_ENGINE` | OCR backend | `easyocr` |
 | `CONFIRM_DANGEROUS` | Require confirmation | `true` |
 | `LOG_DIR` | Log directory | `logs` |
-| `LOG_FILE` | Log filename | `agent-history.json` |
+| `LOG_FILE` | Log filename | `agent-history.jsonl` |
 
 ---
 
@@ -308,15 +308,11 @@ If no response is received within **30 seconds** the action is **automatically d
 ### Logging
 
 Every confirmation decision (approved or denied) is appended to
-`logs/agent-history.json`:
+`logs/agent-history.jsonl` in JSONL format:
 
-```json
-{
-  "event": "safety_decision",
-  "action": {"action": "type", "text": "hello"},
-  "approved": false,
-  "timestamp": "2026-04-15T05:00:00Z"
-}
+```jsonl
+{"event": "safety_decision", "action": {"action": "type", "text": "hello"}, "approved": false, "timestamp": "2026-04-15T05:00:00Z"}
+{"event": "safety_decision", "action": {"action": "click", "x": 100, "y": 200}, "approved": true, "timestamp": "2026-04-15T05:01:00Z"}
 ```
 
 ### Disable confirmations

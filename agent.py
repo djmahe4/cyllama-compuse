@@ -26,7 +26,7 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL_NAME = os.environ.get("MODEL_NAME", "llama3:8b")
 MAX_ITERATIONS = 30
 LOG_DIR = os.environ.get("LOG_DIR", "logs")
-LOG_FILE = os.environ.get("LOG_FILE", "agent-history.json")
+LOG_FILE = os.environ.get("LOG_FILE", "agent-history.jsonl")
 
 # Whether to request confirmation before dangerous actions.
 # Evaluated once at import time; patch ``agent.CONFIRM_DANGEROUS`` in tests.
@@ -82,23 +82,19 @@ def _ensure_log_dir() -> str:
 
 
 def _append_log(entry: dict) -> None:
-    """Append an entry to the JSON log file."""
+    """Append an entry to the log file in JSONL format."""
     log_path = _ensure_log_dir()
-    history: list = []
-    if os.path.exists(log_path):
-        try:
-            with open(log_path, "r") as f:
-                history = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            history = []
-    history.append(entry)
-    with open(log_path, "w") as f:
-        json.dump(history, f, indent=2)
+    try:
+        with open(log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except (IOError, TypeError) as e:
+        logger.error("Failed to append to log file %s: %s", log_path, e)
 
 
 # ---------------------------------------------------------------------------
 # Ollama client
 # ---------------------------------------------------------------------------
+
 
 def call_ollama(messages: list[dict], model: str = MODEL_NAME) -> str:
     """Call the Ollama chat API and return the assistant's response text."""
@@ -144,6 +140,7 @@ def parse_action(raw: str) -> dict:
 # ---------------------------------------------------------------------------
 # Safety
 # ---------------------------------------------------------------------------
+
 
 def _is_dangerous(action: dict) -> bool:
     """Return True if the action is considered potentially dangerous."""
@@ -237,6 +234,7 @@ def request_confirmation(action: dict) -> bool:
 # Agent
 # ---------------------------------------------------------------------------
 
+
 class DesktopAgent:
     """Ollama-powered desktop automation agent."""
 
@@ -292,7 +290,9 @@ class DesktopAgent:
             yield _emit("ocr", {"elements": ocr_elements})
 
             # Sort by position (top-to-bottom, left-to-right) before truncating.
-            sorted_elements = sorted(ocr_elements, key=lambda e: (e.get("y", 0), e.get("x", 0)))
+            sorted_elements = sorted(
+                ocr_elements, key=lambda e: (e.get("y", 0), e.get("x", 0))
+            )
             # 3. Build prompt with OCR context
             ocr_summary = json.dumps(sorted_elements[:50])  # limit to 50 elements
             self._messages.append(
@@ -318,13 +318,13 @@ class DesktopAgent:
             yield _emit("action", action)
 
             # Append model response to message history
-            self._messages.append(
-                {"role": "assistant", "content": json.dumps(action)}
-            )
+            self._messages.append({"role": "assistant", "content": json.dumps(action)})
 
             # 5. Check for done
             if action.get("action") == "done":
-                yield _emit("log", {"message": f"Task complete: {action.get('reason', '')}"})
+                yield _emit(
+                    "log", {"message": f"Task complete: {action.get('reason', '')}"}
+                )
                 _append_log(
                     {
                         "task": task,
@@ -340,7 +340,10 @@ class DesktopAgent:
             if CONFIRM_DANGEROUS and _is_dangerous(action):
                 approved = request_confirmation(action)
                 if not approved:
-                    yield _emit("log", {"message": f"⚠️ Action denied by user: {action.get('action')}"})
+                    yield _emit(
+                        "log",
+                        {"message": f"⚠️ Action denied by user: {action.get('action')}"},
+                    )
                     # Inform the model so it can suggest an alternative approach.
                     self._messages.append(
                         {
@@ -357,7 +360,8 @@ class DesktopAgent:
             try:
                 result = self.computer.execute_action(action)
                 yield _emit(
-                    "log", {"message": f"Action executed: {action.get('action')} → {result}"}
+                    "log",
+                    {"message": f"Action executed: {action.get('action')} → {result}"},
                 )
             except Exception as exc:
                 yield _emit("log", {"message": f"Execution error: {exc}"})
@@ -387,4 +391,3 @@ class DesktopAgent:
             )
 
         yield _emit("done", {"iterations": len(self.history), "task": task})
-
