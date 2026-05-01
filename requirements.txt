@@ -13,6 +13,9 @@ easyocr>=1.7.0
 rich>=13.0.0
 termcolor>=2.4.0
 
+# C++ element engine Python bindings (build-time dependency)
+pybind11>=2.11.0
+
 # Testing
 pytest>=8.0.0
 pytest-mock>=3.14.0
