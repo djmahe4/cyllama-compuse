@@ -11,7 +11,7 @@ namespace py = pybind11;
 // Python module: element_engine_cpp
 // -------------------------------------------------------------------------
 PYBIND11_MODULE(element_engine_cpp, m) {
-    m.doc() = "C++ element identification engine for cyllama-compuse";
+    m.doc() = "C++ element identification engine for CYLLAMA COMPUSE";
 
     // ------------------------------------------------------------------
     // ElementRect

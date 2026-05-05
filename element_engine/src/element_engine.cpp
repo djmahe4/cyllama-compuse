@@ -23,12 +23,15 @@ uint32_t crc32_bytes(const void* data, size_t len) noexcept {
 }
 
 // FNV-1a 64-bit hash over raw bytes
+static const uint64_t FNV1A_OFFSET_BASIS_64 = 14695981039346656037ULL;
+static const uint64_t FNV1A_PRIME_64        = 1099511628211ULL;
+
 static uint64_t fnv1a_64(const void* data, size_t len) noexcept {
     const uint8_t* p = static_cast<const uint8_t*>(data);
-    uint64_t h = 14695981039346656037ULL;
+    uint64_t h = FNV1A_OFFSET_BASIS_64;
     for (size_t i = 0; i < len; ++i) {
         h ^= p[i];
-        h *= 1099511628211ULL;
+        h *= FNV1A_PRIME_64;
     }
     return h;
 }

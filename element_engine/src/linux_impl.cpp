@@ -150,15 +150,11 @@ private:
         if (err) { g_error_free(err); err = nullptr; }
 
         // Bounding rect via Component interface
-        AtspiComponent* comp = reinterpret_cast<AtspiComponent*>(
-            atspi_accessible_get_action(acc));  // placeholder
-        (void)comp;
+        AtspiComponent* comp = atspi_accessible_get_component(acc);
 
         // Use atspi_component_get_extents
-        AtspiRect* ext = atspi_component_get_extents(
-            reinterpret_cast<AtspiComponent*>(
-                atspi_accessible_get_component(acc)),
-            ATSPI_COORD_TYPE_SCREEN, &err);
+        AtspiRect* ext = comp ? atspi_component_get_extents(
+            comp, ATSPI_COORD_TYPE_SCREEN, &err) : nullptr;
         if (ext) {
             info.rect.x      = ext->x;
             info.rect.y      = ext->y;
