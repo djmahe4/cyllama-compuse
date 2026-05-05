@@ -141,10 +141,6 @@ class TestElementEngineSessionAvailable:
         fake_el = _make_mock_element_info()
         mock_cpp, mock_engine, mock_info = self._make_mock_cpp([fake_el])
 
-        import importlib
-        with patch.dict("import sys; sys.modules", {}):
-            pass  # just ensure no leakage
-
         import computers.desktop.element_engine_wrapper as wrapper
         with patch.object(wrapper, "_cpp", mock_cpp), \
              patch.object(wrapper, "_ENGINE_AVAILABLE", True):
