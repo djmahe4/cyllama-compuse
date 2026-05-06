@@ -172,3 +172,36 @@ class DesktopComputer:
 
         else:
             raise ValueError(f"Unknown action type: {action_type}")
+
+    # ------------------------------------------------------------------
+    # Hybrid element enumeration
+    # ------------------------------------------------------------------
+
+    def enumerate_elements(self) -> list[dict]:
+        """Enumerate UI elements using the hybrid engine.
+
+        Tries the C++ element engine first; falls back to OCR when unavailable
+        or when the engine returns no results.
+
+        Returns a list of element dicts. Element engine dicts include an ``id``
+        key with the stable ElementId fields; OCR dicts retain the existing
+        ``{text, x, y, w, h, confidence}`` schema (source='ocr').
+        """
+        from computers.desktop.element_engine_wrapper import (
+            ElementEngineSession,
+            is_available,
+        )
+
+        if is_available():
+            with ElementEngineSession() as session:
+                elements = session.enumerate()
+            if elements:
+                return elements
+
+        # Fallback: screenshot + OCR
+        try:
+            screenshot = self.capture_screen()
+            return self.run_ocr(screenshot)
+        except Exception as exc:
+            logger.warning("enumerate_elements fallback (OCR) failed: %s", exc)
+            return []

@@ -47,7 +47,16 @@ DANGEROUS_ACTIONS = {
 
 SYSTEM_PROMPT = """\
 You are CYLLAMA COMPUSE, an AI desktop automation agent.
-You can see the user's screen via OCR and execute actions on their desktop.
+You can see the user's screen via UI element enumeration and execute actions on their desktop.
+
+Screen elements are provided as a JSON list.  Each element may have:
+- "id": a stable unique identifier (when the element engine is active)
+- "name" / "text": the element's label or text content
+- "role_name": the element type ("button", "edit", "text", …)
+- "x", "y": screen coordinates (centre of the element)
+- "w", "h" / "width", "height": element dimensions
+- "enabled", "focused": interaction state
+- "source": "accessibility" or "ocr"
 
 You MUST respond with a single valid JSON object. Do NOT include any other text.
 The JSON MUST contain these keys:
@@ -280,11 +289,11 @@ class DesktopAgent:
                 yield _emit("log", {"message": f"Screenshot failed: {exc}"})
                 break
 
-            # 2. Perception — run OCR
+            # 2. Perception — enumerate UI elements (element engine or OCR fallback)
             try:
-                ocr_elements = self.computer.run_ocr(screenshot)
+                ocr_elements = self.computer.enumerate_elements()
             except Exception as exc:
-                yield _emit("log", {"message": f"OCR failed: {exc}"})
+                yield _emit("log", {"message": f"Element enumeration failed: {exc}"})
                 ocr_elements = []
 
             yield _emit("ocr", {"elements": ocr_elements})
@@ -293,13 +302,13 @@ class DesktopAgent:
             sorted_elements = sorted(
                 ocr_elements, key=lambda e: (e.get("y", 0), e.get("x", 0))
             )
-            # 3. Build prompt with OCR context
-            ocr_summary = json.dumps(sorted_elements[:50])  # limit to 50 elements
+            # 3. Build prompt with element context
+            elements_summary = json.dumps(sorted_elements[:50])  # limit to 50 elements
             self._messages.append(
                 {
                     "role": "user",
                     "content": (
-                        f"Current screen OCR elements (up to 50):\n{ocr_summary}\n\n"
+                        f"Current screen elements (up to 50):\n{elements_summary}\n\n"
                         "Based on the current screen state, what action should I take next? "
                         "Respond with a JSON object."
                     ),
